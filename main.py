@@ -1,59 +1,63 @@
 # app.py
 
 import streamlit as st
-import requests
 import pandas as pd
 import pydeck as pdk
+from openaq import OpenAQ
 
+# --- Setup ---
 st.set_page_config(layout="wide")
-st.title("📍 Jakarta Air Quality - Latest Readings (OpenAQ v3)")
+st.title("📍 Jakarta Air Quality (OpenAQ SDK)")
 
-# --- Settings ---
 API_KEY = st.secrets["openaq_api_key"]
-LOCATION_ID = 8118
-LIMIT = 100
 
-# --- Fetch from OpenAQ v3 `/latest` ---
+# Coordinates for Jakarta
+JAKARTA_COORDS = [106.84513, -6.21462]  # [longitude, latitude]
+RADIUS_METERS = 15000
+
+# --- Fetch Location Data from OpenAQ SDK ---
 @st.cache_data(ttl=600)
-def fetch_latest_data(location_id, limit):
-    url = "https://api.openaq.org/v3/latest"
-    headers = {"X-API-Key": API_KEY}
-    params = {
-        "location_id": location_id,
-        "limit": limit
-    }
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
-    return response.json()
+def fetch_locations(coordinates, radius=12000, limit=100):
+    client = OpenAQ(api_key=API_KEY)
+    try:
+        response = client.locations.list(
+            coordinates=coordinates,
+            radius=radius,
+            limit=limit
+        )
+        return response["results"]
+    finally:
+        client.close()
 
-# --- Load & Flatten ---
+# --- Fetch and Process Data ---
 try:
-    data = fetch_latest_data(LOCATION_ID, LIMIT)
-    measurements = data["data"]
+    results = fetch_locations(JAKARTA_COORDS, RADIUS_METERS, limit=100)
+    data = []
 
-    rows = []
-    for item in measurements:
-        coords = item.get("coordinates", {})
-        for m in item.get("measurements", []):
-            rows.append({
-                "location": item.get("location"),
-                "parameter": m.get("parameter"),
-                "value": m.get("value"),
-                "unit": m.get("unit"),
-                "latitude": coords.get("latitude"),
-                "longitude": coords.get("longitude"),
-            })
+    for item in results:
+        if "coordinates" in item:
+            lat = item["coordinates"]["latitude"]
+            lon = item["coordinates"]["longitude"]
+            for param in item.get("parameters", []):
+                data.append({
+                    "location": item.get("name"),
+                    "parameter": param["parameter"],
+                    "value": param["lastValue"],
+                    "unit": param["unit"],
+                    "latitude": lat,
+                    "longitude": lon
+                })
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(data)
 
     if df.empty:
-        st.warning("No data found for the selected location.")
+        st.warning("No AQI data available.")
     else:
         st.sidebar.title("⚙️ Filter")
-        pollutant = st.sidebar.selectbox("Select pollutant", df["parameter"].unique())
-        df_filtered = df[df["parameter"] == pollutant]
+        selected_param = st.sidebar.selectbox("Select pollutant", df["parameter"].unique())
+        df_filtered = df[df["parameter"] == selected_param]
 
-        st.subheader(f"🗺️ {pollutant.upper()} Concentration - Location ID {LOCATION_ID}")
+        st.subheader(f"🗺️ {selected_param.upper()} Levels in Jakarta (via OpenAQ SDK)")
 
         layer = pdk.Layer(
             "ScatterplotLayer",
@@ -61,25 +65,24 @@ try:
             get_position='[longitude, latitude]',
             get_color='[255, 140 - value, 100]',
             get_radius=800,
-            pickable=True,
+            pickable=True
         )
 
         view_state = pdk.ViewState(
-            latitude=df_filtered["latitude"].mean(),
-            longitude=df_filtered["longitude"].mean(),
-            zoom=11,
-            pitch=0,
+            latitude=JAKARTA_COORDS[1],
+            longitude=JAKARTA_COORDS[0],
+            zoom=10.5
         )
 
         deck = pdk.Deck(
             map_style="mapbox://styles/mapbox/light-v9",
             initial_view_state=view_state,
             layers=[layer],
-            tooltip={"text": "{parameter}: {value} {unit}"}
+            tooltip={"text": "{location}\n{parameter}: {value} {unit}"}
         )
 
         st.pydeck_chart(deck)
         st.dataframe(df_filtered)
 
 except Exception as e:
-    st.error(f"❌ Failed to fetch or process data: {e}")
+    st.error(f"❌ Error fetching data: {e}")
