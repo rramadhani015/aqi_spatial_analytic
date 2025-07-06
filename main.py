@@ -15,16 +15,20 @@ JAKARTA_COORDS = [106.84513, -6.21462]  # [lon, lat]
 RADIUS_METERS = 15000
 LIMIT = 100
 
-# --- Safely fetch data using context manager ---
-@st.cache_data(ttl=600)
-def get_cached_location_data():
+# --- NON-cached function that safely uses the OpenAQ client ---
+def fetch_location_data(coords, radius, limit):
     with OpenAQ(api_key=API_KEY) as client:
         response = client.locations.list(
-            coordinates=JAKARTA_COORDS,
-            radius=RADIUS_METERS,
-            limit=LIMIT
+            coordinates=coords,
+            radius=radius,
+            limit=limit
         )
         return response["results"]
+
+# --- Cached wrapper that only caches the output ---
+@st.cache_data(ttl=600)
+def get_cached_location_data():
+    return fetch_location_data(JAKARTA_COORDS, RADIUS_METERS, LIMIT)
 
 # --- Main logic ---
 try:
