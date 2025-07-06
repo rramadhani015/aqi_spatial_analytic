@@ -6,94 +6,80 @@ import pandas as pd
 import pydeck as pdk
 
 st.set_page_config(layout="wide")
-st.title("🌇 Jakarta Air Quality Map (OpenAQ API v3)")
+st.title("📍 Jakarta Air Quality - Latest Readings (OpenAQ v3)")
 
 # --- Settings ---
-LOCATION_ID = 8118  # You can change to another location ID
-API_KEY = st.secrets["openaq_api_key"]  # Set in .streamlit/secrets.toml
+API_KEY = st.secrets["openaq_api_key"]
+LOCATION_ID = 8118
+LIMIT = 100
 
-# --- Fetch Location Data from OpenAQ v3 ---
+# --- Fetch from OpenAQ v3 `/latest` ---
 @st.cache_data(ttl=600)
-def fetch_location_data(location_id):
-    url = f"https://api.openaq.org/v3/locations/{location_id}"
-    headers = {"X-API-Key": API_KEY}
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()
-
-# --- Fetch Latest Measurements from OpenAQ v3 ---
-@st.cache_data(ttl=600)
-def fetch_latest_measurements(location_id):
+def fetch_latest_data(location_id, limit):
     url = "https://api.openaq.org/v3/latest"
     headers = {"X-API-Key": API_KEY}
     params = {
         "location_id": location_id,
-        "limit": 100
+        "limit": limit
     }
     response = requests.get(url, headers=headers, params=params)
     response.raise_for_status()
     return response.json()
 
-# --- Main ---
+# --- Load & Flatten ---
 try:
-    location_data = fetch_location_data(LOCATION_ID)
-    latest_data = fetch_latest_measurements(LOCATION_ID)
+    data = fetch_latest_data(LOCATION_ID, LIMIT)
+    measurements = data["data"]
 
-    location = location_data["data"]
-    measurements = latest_data["data"]
-
-    st.subheader(f"📍 Location: {location['name']}")
-
-    # Flatten pollutant readings
     rows = []
-    for entry in measurements:
-        for m in entry["measurements"]:
+    for item in measurements:
+        coords = item.get("coordinates", {})
+        for m in item.get("measurements", []):
             rows.append({
-                "parameter": m["parameter"],
-                "value": m["value"],
-                "unit": m["unit"],
-                "latitude": entry["coordinates"]["latitude"],
-                "longitude": entry["coordinates"]["longitude"]
+                "location": item.get("location"),
+                "parameter": m.get("parameter"),
+                "value": m.get("value"),
+                "unit": m.get("unit"),
+                "latitude": coords.get("latitude"),
+                "longitude": coords.get("longitude"),
             })
 
     df = pd.DataFrame(rows)
 
-    st.sidebar.title("⚙️ Controls")
-    selected_pollutant = st.sidebar.selectbox("Select pollutant", df["parameter"].unique())
-
-    filtered_df = df[df["parameter"] == selected_pollutant]
-
-    # --- Pydeck Map ---
-    if filtered_df.empty:
-        st.warning("No measurements available for the selected pollutant.")
+    if df.empty:
+        st.warning("No data found for the selected location.")
     else:
-        st.subheader(f"🗺️ Spatial View - {selected_pollutant.upper()} Concentrations")
+        st.sidebar.title("⚙️ Filter")
+        pollutant = st.sidebar.selectbox("Select pollutant", df["parameter"].unique())
+        df_filtered = df[df["parameter"] == pollutant]
+
+        st.subheader(f"🗺️ {pollutant.upper()} Concentration - Location ID {LOCATION_ID}")
 
         layer = pdk.Layer(
             "ScatterplotLayer",
-            data=filtered_df,
+            data=df_filtered,
             get_position='[longitude, latitude]',
-            get_radius=800,
             get_color='[255, 140 - value, 100]',
+            get_radius=800,
             pickable=True,
         )
 
         view_state = pdk.ViewState(
-            latitude=filtered_df["latitude"].mean(),
-            longitude=filtered_df["longitude"].mean(),
+            latitude=df_filtered["latitude"].mean(),
+            longitude=df_filtered["longitude"].mean(),
             zoom=11,
             pitch=0,
         )
 
-        r = pdk.Deck(
+        deck = pdk.Deck(
             map_style="mapbox://styles/mapbox/light-v9",
             initial_view_state=view_state,
             layers=[layer],
             tooltip={"text": "{parameter}: {value} {unit}"}
         )
 
-        st.pydeck_chart(r)
-        st.dataframe(filtered_df)
+        st.pydeck_chart(deck)
+        st.dataframe(df_filtered)
 
 except Exception as e:
-    st.error(f"❌ Failed to fetch data: {e}")
+    st.error(f"❌ Failed to fetch or process data: {e}")
