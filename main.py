@@ -3,54 +3,55 @@
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
-from openaq import OpenAQ
+import requests
 
 # --- Streamlit setup ---
 st.set_page_config(layout="wide")
-st.title("🌇 Jakarta Air Quality - Spatial View (OpenAQ v3 SDK)")
+st.title("🌇 Jakarta Air Quality - Spatial View (OpenAQ v3 REST API)")
 
 # --- Constants ---
 API_KEY = st.secrets["openaq_api_key"]
-JAKARTA_COORDS = [106.84513, -6.21462]  # [lon, lat]
+JAKARTA_COORDS = [106.84513, -6.21462]
 RADIUS_METERS = 15000
 LIMIT = 100
 
-# --- Fetch data (no caching) ---
-results = []
-try:
-    with OpenAQ(api_key=API_KEY) as client:
-        response = client.locations.list(
-            coordinates=JAKARTA_COORDS,
-            radius=RADIUS_METERS,
-            limit=LIMIT
-        )
-        results = response["results"]
-except Exception as e:
-    st.error(f"❌ Error fetching AQI data: {e}")
+# --- Fetch using requests ---
+@st.cache_data(ttl=600)
+def fetch_openaq_locations():
+    url = "https://api.openaq.org/v3/locations"
+    headers = {"X-API-Key": API_KEY}
+    params = {
+        "coordinates": f"{JAKARTA_COORDS[1]},{JAKARTA_COORDS[0]}",  # lat,lon
+        "radius": RADIUS_METERS,
+        "limit": LIMIT
+    }
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()["results"]
 
-# --- Process and Display ---
-if results:
+# --- Main ---
+try:
+    results = fetch_openaq_locations()
+
     records = []
     for loc in results:
         coords = loc.get("coordinates", {})
-        lat = coords.get("latitude")
-        lon = coords.get("longitude")
         for param in loc.get("parameters", []):
             records.append({
                 "location": loc.get("name"),
                 "parameter": param.get("parameter"),
                 "value": param.get("lastValue"),
                 "unit": param.get("unit"),
-                "latitude": lat,
-                "longitude": lon
+                "latitude": coords.get("latitude"),
+                "longitude": coords.get("longitude")
             })
 
     df = pd.DataFrame(records)
 
     if df.empty:
-        st.warning("No data available for the current filters.")
+        st.warning("No AQI data found.")
     else:
-        st.sidebar.title("⚙️ Filters")
+        st.sidebar.title("⚙️ Filter")
         pollutant = st.sidebar.selectbox("Select pollutant", df["parameter"].unique())
         df_filtered = df[df["parameter"] == pollutant]
 
@@ -62,7 +63,7 @@ if results:
             get_position='[longitude, latitude]',
             get_color='[255, 140 - value, 100]',
             get_radius=800,
-            pickable=True,
+            pickable=True
         )
 
         view_state = pdk.ViewState(
@@ -81,3 +82,5 @@ if results:
         st.pydeck_chart(deck)
         st.dataframe(df_filtered)
 
+except Exception as e:
+    st.error(f"❌ Error fetching AQI data: {e}")
