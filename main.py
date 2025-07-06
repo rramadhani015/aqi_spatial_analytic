@@ -15,26 +15,21 @@ JAKARTA_COORDS = [106.84513, -6.21462]  # [lon, lat]
 RADIUS_METERS = 15000
 LIMIT = 100
 
-# --- NON-cached function that safely uses the OpenAQ client ---
-def fetch_location_data(coords, radius, limit):
+# --- Fetch data (no caching) ---
+results = []
+try:
     with OpenAQ(api_key=API_KEY) as client:
         response = client.locations.list(
-            coordinates=coords,
-            radius=radius,
-            limit=limit
+            coordinates=JAKARTA_COORDS,
+            radius=RADIUS_METERS,
+            limit=LIMIT
         )
-        return response["results"]
+        results = response["results"]
+except Exception as e:
+    st.error(f"❌ Error fetching AQI data: {e}")
 
-# --- Cached wrapper that only caches the output ---
-@st.cache_data(ttl=600)
-def get_cached_location_data():
-    return fetch_location_data(JAKARTA_COORDS, RADIUS_METERS, LIMIT)
-
-# --- Main logic ---
-try:
-    results = get_cached_location_data()
-
-    # Flatten location and parameter info
+# --- Process and Display ---
+if results:
     records = []
     for loc in results:
         coords = loc.get("coordinates", {})
@@ -53,15 +48,12 @@ try:
     df = pd.DataFrame(records)
 
     if df.empty:
-        st.warning("No air quality data found for Jakarta.")
+        st.warning("No data available for the current filters.")
     else:
-        # --- Sidebar filter ---
         st.sidebar.title("⚙️ Filters")
         pollutant = st.sidebar.selectbox("Select pollutant", df["parameter"].unique())
-
         df_filtered = df[df["parameter"] == pollutant]
 
-        # --- Spatial map ---
         st.subheader(f"🗺️ {pollutant.upper()} Levels in Jakarta")
 
         layer = pdk.Layer(
@@ -89,5 +81,3 @@ try:
         st.pydeck_chart(deck)
         st.dataframe(df_filtered)
 
-except Exception as e:
-    st.error(f"❌ Error fetching AQI data: {e}")
